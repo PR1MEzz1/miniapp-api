@@ -15,7 +15,7 @@ from aiogram.types import (
     WebAppInfo,
 )
 
-TOKEN = "8640152586:AAER3Gh8464mOktlneUPO3RcQ9dw8YvzRQU"
+TOKEN = os.getenv("8640152586:AAER3Gh8464mOktlneUPO3RcQ9dw8YvzRQU")
 ADMIN_ID = 588097726
 MINI_APP_URL = "https://singular-mooncake-c8c1b8.netlify.app"
 
