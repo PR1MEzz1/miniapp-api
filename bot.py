@@ -2,12 +2,15 @@ import asyncio
 import json
 import os
 import threading
-from flask import Flask
+import aiohttp
 from datetime import datetime
 from urllib.parse import quote
+from flask import Flask
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import CommandStart
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import (
     Message,
     ReplyKeyboardMarkup,
@@ -15,9 +18,10 @@ from aiogram.types import (
     WebAppInfo,
 )
 
-TOKEN = os.getenv("8640152586:AAER3Gh8464mOktlneUPO3RcQ9dw8YvzRQU")
+TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = 588097726
 MINI_APP_URL = "https://singular-mooncake-c8c1b8.netlify.app"
+API_URL = "https://miniapp-api2.onrender.com"
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(BASE_DIR, "data")
@@ -29,6 +33,7 @@ SETTINGS_FILE = os.path.join(DATA_DIR, "settings.json")
 
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
+
 health_app = Flask(__name__)
 
 @health_app.route("/")
@@ -38,6 +43,16 @@ def health():
 def run_health_server():
     port = int(os.environ.get("PORT", 10000))
     health_app.run(host="0.0.0.0", port=port)
+
+
+class AddProduct(StatesGroup):
+    name = State()
+    category = State()
+    price = State()
+    old_price = State()
+    stock = State()
+    desc = State()
+    image = State()
 
 
 def now():
@@ -137,16 +152,32 @@ def contact_keyboard():
 
 
 def main_keyboard(user):
+    keyboard = [
+        [
+            KeyboardButton(
+                text="🛍 Открыть Premium Store",
+                web_app=WebAppInfo(url=mini_app_link(user))
+            )
+        ],
+        [KeyboardButton(text="👤 Профиль"), KeyboardButton(text="📦 Мои заказы")],
+        [KeyboardButton(text="🔔 Уведомления"), KeyboardButton(text="📞 Поддержка")]
+    ]
+
+    if user.get("role") == "admin":
+        keyboard.append([KeyboardButton(text="🛠 Админка")])
+
+    return ReplyKeyboardMarkup(
+        keyboard=keyboard,
+        resize_keyboard=True
+    )
+
+
+def admin_keyboard():
     return ReplyKeyboardMarkup(
         keyboard=[
-            [
-                KeyboardButton(
-                    text="🛍 Открыть Premium Store",
-                    web_app=WebAppInfo(url=mini_app_link(user))
-                )
-            ],
-            [KeyboardButton(text="👤 Профиль"), KeyboardButton(text="📦 Мои заказы")],
-            [KeyboardButton(text="🔔 Уведомления"), KeyboardButton(text="📞 Поддержка")]
+            [KeyboardButton(text="➕ Добавить товар")],
+            [KeyboardButton(text="📦 Все товары")],
+            [KeyboardButton(text="⬅️ Назад")]
         ],
         resize_keyboard=True
     )
@@ -401,6 +432,150 @@ async def admin_orders(message: Message):
             f"№{order.get('order_id')} | {order.get('status')}\n"
             f"{order.get('name')} | {order.get('phone')}\n"
             f"Сумма: {order.get('total')} ₽\n\n"
+        )
+
+    await message.answer(text)
+
+
+@dp.message(F.text == "🛠 Админка")
+async def admin_panel(message: Message):
+    if message.from_user.id != ADMIN_ID:
+        await message.answer("Доступ закрыт.")
+        return
+
+    await message.answer(
+        "🛠 Админ-панель\n\nВыберите действие:",
+        reply_markup=admin_keyboard()
+    )
+
+
+@dp.message(F.text == "⬅️ Назад")
+async def back_to_main(message: Message):
+    user = get_user(message.from_user.id)
+    await message.answer(
+        "Главное меню:",
+        reply_markup=main_keyboard(user) if user else contact_keyboard()
+    )
+
+
+@dp.message(F.text == "➕ Добавить товар")
+async def add_product_start(message: Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        await message.answer("Доступ закрыт.")
+        return
+
+    await state.set_state(AddProduct.name)
+    await message.answer("Введите название товара:")
+
+
+@dp.message(AddProduct.name)
+async def add_product_name(message: Message, state: FSMContext):
+    await state.update_data(name=message.text)
+    await state.set_state(AddProduct.category)
+    await message.answer("Введите категорию: Новинки или Популярные")
+
+
+@dp.message(AddProduct.category)
+async def add_product_category(message: Message, state: FSMContext):
+    await state.update_data(category=message.text)
+    await state.set_state(AddProduct.price)
+    await message.answer("Введите цену товара цифрами:")
+
+
+@dp.message(AddProduct.price)
+async def add_product_price(message: Message, state: FSMContext):
+    if not message.text.isdigit():
+        await message.answer("Введите цену только цифрами.")
+        return
+
+    await state.update_data(price=int(message.text))
+    await state.set_state(AddProduct.old_price)
+    await message.answer("Введите старую цену для скидки или 0:")
+
+
+@dp.message(AddProduct.old_price)
+async def add_product_old_price(message: Message, state: FSMContext):
+    if not message.text.isdigit():
+        await message.answer("Введите старую цену цифрами или 0.")
+        return
+
+    await state.update_data(oldPrice=int(message.text) if message.text != "0" else "")
+    await state.set_state(AddProduct.stock)
+    await message.answer("Введите остаток товара цифрами:")
+
+
+@dp.message(AddProduct.stock)
+async def add_product_stock(message: Message, state: FSMContext):
+    if not message.text.isdigit():
+        await message.answer("Введите остаток только цифрами.")
+        return
+
+    await state.update_data(stock=int(message.text))
+    await state.set_state(AddProduct.desc)
+    await message.answer("Введите описание товара:")
+
+
+@dp.message(AddProduct.desc)
+async def add_product_desc(message: Message, state: FSMContext):
+    await state.update_data(desc=message.text)
+    await state.set_state(AddProduct.image)
+    await message.answer("Вставьте ссылку на картинку товара:")
+
+
+@dp.message(AddProduct.image)
+async def add_product_image(message: Message, state: FSMContext):
+    data = await state.get_data()
+
+    product = {
+        "id": int(datetime.now().timestamp() * 1000),
+        "name": data.get("name"),
+        "category": data.get("category", "Новинки"),
+        "price": data.get("price", 0),
+        "oldPrice": data.get("oldPrice", ""),
+        "stock": data.get("stock", 0),
+        "desc": data.get("desc", ""),
+        "image": message.text,
+        "active": True
+    }
+
+    async with aiohttp.ClientSession() as session:
+        async with session.post(f"{API_URL}/products", json=product) as response:
+            if response.status in [200, 201]:
+                await message.answer(
+                    f"✅ Товар добавлен:\n\n"
+                    f"{product['name']}\n"
+                    f"Цена: {product['price']} ₽\n"
+                    f"Категория: {product['category']}",
+                    reply_markup=admin_keyboard()
+                )
+            else:
+                await message.answer("Ошибка добавления товара на сервер.")
+
+    await state.clear()
+
+
+@dp.message(F.text == "📦 Все товары")
+async def all_products(message: Message):
+    if message.from_user.id != ADMIN_ID:
+        await message.answer("Доступ закрыт.")
+        return
+
+    async with aiohttp.ClientSession() as session:
+        async with session.get(f"{API_URL}/products") as response:
+            products = await response.json()
+
+    if not products:
+        await message.answer("Товаров пока нет.")
+        return
+
+    text = "📦 Товары:\n\n"
+    for p in products[-10:]:
+        text += (
+            f"ID: {p.get('id')}\n"
+            f"{p.get('name')}\n"
+            f"Цена: {p.get('price')} ₽\n"
+            f"Остаток: {p.get('stock')}\n"
+            f"Активен: {'Да' if p.get('active') else 'Нет'}\n\n"
         )
 
     await message.answer(text)
