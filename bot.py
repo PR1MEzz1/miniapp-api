@@ -36,9 +36,11 @@ dp = Dispatcher()
 
 health_app = Flask(__name__)
 
+
 @health_app.route("/")
 def health():
     return "Bot is running", 200
+
 
 def run_health_server():
     port = int(os.environ.get("PORT", 10000))
@@ -53,6 +55,20 @@ class AddProduct(StatesGroup):
     stock = State()
     desc = State()
     image = State()
+
+
+class EditProduct(StatesGroup):
+    product_id = State()
+    price = State()
+    stock = State()
+
+
+class DeleteProduct(StatesGroup):
+    product_id = State()
+
+
+class ToggleProduct(StatesGroup):
+    product_id = State()
 
 
 def now():
@@ -163,13 +179,10 @@ def main_keyboard(user):
         [KeyboardButton(text="🔔 Уведомления"), KeyboardButton(text="📞 Поддержка")]
     ]
 
-    if user.get("role") == "admin":
+    if user and user.get("role") == "admin":
         keyboard.append([KeyboardButton(text="🛠 Админка")])
 
-    return ReplyKeyboardMarkup(
-        keyboard=keyboard,
-        resize_keyboard=True
-    )
+    return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
 
 
 def admin_keyboard():
@@ -177,6 +190,8 @@ def admin_keyboard():
         keyboard=[
             [KeyboardButton(text="➕ Добавить товар")],
             [KeyboardButton(text="📦 Все товары")],
+            [KeyboardButton(text="💰 Изменить цену"), KeyboardButton(text="📦 Изменить остаток")],
+            [KeyboardButton(text="👁 Скрыть/показать товар"), KeyboardButton(text="❌ Удалить товар")],
             [KeyboardButton(text="⬅️ Назад")]
         ],
         resize_keyboard=True
@@ -191,6 +206,40 @@ def format_items(items):
     for item in items:
         text += f"• {item.get('name', 'Товар')} × {item.get('qty', 1)} — {item.get('price', 0)} ₽\n"
     return text.strip()
+
+
+async def api_get_products():
+    async with aiohttp.ClientSession() as session:
+        async with session.get(f"{API_URL}/products") as response:
+            if response.status == 200:
+                return await response.json()
+            return []
+
+
+async def api_add_product(product):
+    async with aiohttp.ClientSession() as session:
+        async with session.post(f"{API_URL}/products", json=product) as response:
+            return response.status in [200, 201]
+
+
+async def api_update_product(product):
+    async with aiohttp.ClientSession() as session:
+        async with session.put(f"{API_URL}/products/{product['id']}", json=product) as response:
+            return response.status in [200, 201]
+
+
+async def api_delete_product(product_id):
+    async with aiohttp.ClientSession() as session:
+        async with session.delete(f"{API_URL}/products/{product_id}") as response:
+            return response.status in [200, 201]
+
+
+async def api_find_product(product_id):
+    products = await api_get_products()
+    for product in products:
+        if str(product.get("id")) == str(product_id):
+            return product
+    return None
 
 
 def save_order_from_webapp(message: Message, data: dict):
@@ -450,7 +499,8 @@ async def admin_panel(message: Message):
 
 
 @dp.message(F.text == "⬅️ Назад")
-async def back_to_main(message: Message):
+async def back_to_main(message: Message, state: FSMContext):
+    await state.clear()
     user = get_user(message.from_user.id)
     await message.answer(
         "Главное меню:",
@@ -538,18 +588,19 @@ async def add_product_image(message: Message, state: FSMContext):
         "active": True
     }
 
-    async with aiohttp.ClientSession() as session:
-        async with session.post(f"{API_URL}/products", json=product) as response:
-            if response.status in [200, 201]:
-                await message.answer(
-                    f"✅ Товар добавлен:\n\n"
-                    f"{product['name']}\n"
-                    f"Цена: {product['price']} ₽\n"
-                    f"Категория: {product['category']}",
-                    reply_markup=admin_keyboard()
-                )
-            else:
-                await message.answer("Ошибка добавления товара на сервер.")
+    ok = await api_add_product(product)
+
+    if ok:
+        await message.answer(
+            f"✅ Товар добавлен:\n\n"
+            f"ID: {product['id']}\n"
+            f"{product['name']}\n"
+            f"Цена: {product['price']} ₽\n"
+            f"Категория: {product['category']}",
+            reply_markup=admin_keyboard()
+        )
+    else:
+        await message.answer("Ошибка добавления товара на сервер.")
 
     await state.clear()
 
@@ -560,25 +611,207 @@ async def all_products(message: Message):
         await message.answer("Доступ закрыт.")
         return
 
-    async with aiohttp.ClientSession() as session:
-        async with session.get(f"{API_URL}/products") as response:
-            products = await response.json()
+    products = await api_get_products()
 
     if not products:
         await message.answer("Товаров пока нет.")
         return
 
     text = "📦 Товары:\n\n"
-    for p in products[-10:]:
+    for p in products[:15]:
+        status = "✅ показывается" if p.get("active") else "🙈 скрыт"
         text += (
             f"ID: {p.get('id')}\n"
             f"{p.get('name')}\n"
             f"Цена: {p.get('price')} ₽\n"
             f"Остаток: {p.get('stock')}\n"
-            f"Активен: {'Да' if p.get('active') else 'Нет'}\n\n"
+            f"Статус: {status}\n\n"
         )
 
     await message.answer(text)
+
+
+@dp.message(F.text == "💰 Изменить цену")
+async def edit_price_start(message: Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        await message.answer("Доступ закрыт.")
+        return
+
+    await state.set_state(EditProduct.product_id)
+    await state.update_data(action="price")
+    await message.answer("Введите ID товара, у которого нужно изменить цену:")
+
+
+@dp.message(F.text == "📦 Изменить остаток")
+async def edit_stock_start(message: Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        await message.answer("Доступ закрыт.")
+        return
+
+    await state.set_state(EditProduct.product_id)
+    await state.update_data(action="stock")
+    await message.answer("Введите ID товара, у которого нужно изменить остаток:")
+
+
+@dp.message(EditProduct.product_id)
+async def edit_product_choose(message: Message, state: FSMContext):
+    if not message.text.isdigit():
+        await message.answer("Введите ID только цифрами.")
+        return
+
+    product = await api_find_product(message.text)
+
+    if not product:
+        await message.answer("Товар с таким ID не найден.")
+        await state.clear()
+        return
+
+    data = await state.get_data()
+    action = data.get("action")
+
+    await state.update_data(product=product)
+
+    if action == "price":
+        await state.set_state(EditProduct.price)
+        await message.answer(
+            f"Товар: {product.get('name')}\n"
+            f"Текущая цена: {product.get('price')} ₽\n\n"
+            "Введите новую цену:"
+        )
+    else:
+        await state.set_state(EditProduct.stock)
+        await message.answer(
+            f"Товар: {product.get('name')}\n"
+            f"Текущий остаток: {product.get('stock')}\n\n"
+            "Введите новый остаток:"
+        )
+
+
+@dp.message(EditProduct.price)
+async def edit_product_price(message: Message, state: FSMContext):
+    if not message.text.isdigit():
+        await message.answer("Введите цену только цифрами.")
+        return
+
+    data = await state.get_data()
+    product = data.get("product")
+    product["price"] = int(message.text)
+
+    ok = await api_update_product(product)
+
+    if ok:
+        await message.answer(
+            f"✅ Цена изменена\n\n"
+            f"{product.get('name')}\n"
+            f"Новая цена: {product.get('price')} ₽",
+            reply_markup=admin_keyboard()
+        )
+    else:
+        await message.answer("Ошибка обновления цены.")
+
+    await state.clear()
+
+
+@dp.message(EditProduct.stock)
+async def edit_product_stock(message: Message, state: FSMContext):
+    if not message.text.isdigit():
+        await message.answer("Введите остаток только цифрами.")
+        return
+
+    data = await state.get_data()
+    product = data.get("product")
+    product["stock"] = int(message.text)
+
+    ok = await api_update_product(product)
+
+    if ok:
+        await message.answer(
+            f"✅ Остаток изменён\n\n"
+            f"{product.get('name')}\n"
+            f"Новый остаток: {product.get('stock')}",
+            reply_markup=admin_keyboard()
+        )
+    else:
+        await message.answer("Ошибка обновления остатка.")
+
+    await state.clear()
+
+
+@dp.message(F.text == "👁 Скрыть/показать товар")
+async def toggle_product_start(message: Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        await message.answer("Доступ закрыт.")
+        return
+
+    await state.set_state(ToggleProduct.product_id)
+    await message.answer("Введите ID товара, который нужно скрыть или показать:")
+
+
+@dp.message(ToggleProduct.product_id)
+async def toggle_product_finish(message: Message, state: FSMContext):
+    if not message.text.isdigit():
+        await message.answer("Введите ID только цифрами.")
+        return
+
+    product = await api_find_product(message.text)
+
+    if not product:
+        await message.answer("Товар с таким ID не найден.")
+        await state.clear()
+        return
+
+    product["active"] = not product.get("active", True)
+
+    ok = await api_update_product(product)
+
+    if ok:
+        status = "показывается в каталоге ✅" if product["active"] else "скрыт из каталога 🙈"
+        await message.answer(
+            f"✅ Статус изменён\n\n"
+            f"{product.get('name')}\n"
+            f"Теперь товар: {status}",
+            reply_markup=admin_keyboard()
+        )
+    else:
+        await message.answer("Ошибка изменения статуса.")
+
+    await state.clear()
+
+
+@dp.message(F.text == "❌ Удалить товар")
+async def delete_product_start(message: Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        await message.answer("Доступ закрыт.")
+        return
+
+    await state.set_state(DeleteProduct.product_id)
+    await message.answer("Введите ID товара, который нужно удалить:")
+
+
+@dp.message(DeleteProduct.product_id)
+async def delete_product_finish(message: Message, state: FSMContext):
+    if not message.text.isdigit():
+        await message.answer("Введите ID только цифрами.")
+        return
+
+    product = await api_find_product(message.text)
+
+    if not product:
+        await message.answer("Товар с таким ID не найден.")
+        await state.clear()
+        return
+
+    ok = await api_delete_product(message.text)
+
+    if ok:
+        await message.answer(
+            f"✅ Товар удалён:\n\n{product.get('name')}",
+            reply_markup=admin_keyboard()
+        )
+    else:
+        await message.answer("Ошибка удаления товара.")
+
+    await state.clear()
 
 
 @dp.message()
