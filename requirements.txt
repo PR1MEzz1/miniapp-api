@@ -1,0 +1,6 @@
+flask
+flask-cors
+aiogram
+python-dotenv
+psycopg2-binary
+gunicorn
