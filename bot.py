@@ -1,6 +1,8 @@
 import asyncio
 import json
 import os
+import threading
+from flask import Flask
 from datetime import datetime
 from urllib.parse import quote
 
@@ -27,6 +29,15 @@ SETTINGS_FILE = os.path.join(DATA_DIR, "settings.json")
 
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
+health_app = Flask(__name__)
+
+@health_app.route("/")
+def health():
+    return "Bot is running", 200
+
+def run_health_server():
+    port = int(os.environ.get("PORT", 10000))
+    health_app.run(host="0.0.0.0", port=port)
 
 
 def now():
@@ -412,4 +423,5 @@ async def main():
 
 
 if __name__ == "__main__":
+    threading.Thread(target=run_health_server, daemon=True).start()
     asyncio.run(main())
