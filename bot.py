@@ -830,4 +830,5 @@ async def main():
     await dp.start_polling(bot)
 
 
-threading.Thread(target=run_health_server, daemon=True).start()
+if __name__ == "__main__":
+    asyncio.run(main())
