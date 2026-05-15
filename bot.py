@@ -20,7 +20,7 @@ from aiogram.types import (
 
 TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = 588097726
-MINI_APP_URL = "https://singular-mooncake-c8c1b8.netlify.app"
+MINI_APP_URL = "https://premiumstore.howardwill1100.workers.dev"
 API_URL = "https://miniapp-api2.onrender.com"
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
